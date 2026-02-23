@@ -1,42 +1,83 @@
 const express = require('express');
+const cors = require('cors');
 const { scrapeFlights } = require('./scraping-final');
 
 const app = express();
+app.use(cors());
 app.use(express.json());
 
-// Endpoint para buscar passagens
+// Objeto de Cache em Memória
+const searchCache = new Map();
+const CACHE_DURATION = 30 * 60 * 1000; // 30 minutos em milissegundos
+
 app.post('/search-flights', async (req, res) => {
-  const { client, number, textMessage, origin, destination, departureDate } = req.body;
+    const { origin, destination, departureDate, additional_days_num, debug = false } = req.body;
+    
+    const allowedDays = [1, 3, 7, 14, 28, 60, 160];
+    const days = parseInt(additional_days_num);
 
-  // Validação básica dos dados recebidos
-  if (!client || !number || !textMessage || !origin || !destination || !departureDate) {
-    return res.status(400).json({
-      error: 'Os campos client, number, textMessage, origin, destination e departureDate são obrigatórios.',
-    });
-  }
+    if (!origin || !destination || !departureDate || !allowedDays.includes(days)) {
+        return res.status(400).json({ error: 'Parâmetros inválidos.' });
+    }
 
-  // Converter a data para o formato YYYY-MM-DD
-  const [day, month, year] = departureDate.split('/');
-  const formattedDate = `${year}-${month}-${day}`;
+    // Criar uma chave única para a pesquisa
+    const cacheKey = `${origin}-${destination}-${departureDate}-${days}`.toUpperCase();
 
-  try {
-    const result = await scrapeFlights({ origin, destination, departureDate: formattedDate });
+    // 1. Verificar Cache
+    if (searchCache.has(cacheKey)) {
+        const cachedData = searchCache.get(cacheKey);
+        const now = Date.now();
 
-    // Retornar o texto diretamente no campo "results"
-    return res.json({
-      client,
-      number,
-      textMessage,
-      results: result.result, // Acessa diretamente o texto do retorno
-    });
-  } catch (error) {
-    console.error('Erro durante a execução do endpoint:', error);
-    return res.status(500).json({ error: 'Erro durante o scraping. Tente novamente mais tarde.' });
-  }
+        if (now - cachedData.timestamp < CACHE_DURATION) {
+            if (debug) console.log(`[CACHE] Retornando dados do cache para: ${cacheKey}`);
+            return res.json({ results: cachedData.data, cached: true });
+        } else {
+            if (debug) console.log(`[CACHE] Cache expirado para: ${cacheKey}. Removendo...`);
+            searchCache.delete(cacheKey);
+        }
+    }
+
+    const [d, m, y] = departureDate.split('/');
+    const formattedDate = `${y}-${m}-${d}`;
+
+    try {
+        if (debug) console.log(`[SERVER] Iniciando nova pesquisa para: ${cacheKey}`);
+        
+        const result = await scrapeFlights({ 
+            origin, 
+            destination, 
+            departureDate: formattedDate,
+            days,
+            debug
+        });
+
+        // 2. Salvar no Cache se houver resultados
+        if (result.result && Array.isArray(result.result)) {
+            searchCache.set(cacheKey, {
+                timestamp: Date.now(),
+                data: result.result
+            });
+            if (debug) console.log(`[CACHE] Nova pesquisa salva por 30 min: ${cacheKey}`);
+        }
+
+        res.json({ results: result.result, cached: false });
+
+    } catch (error) {
+        res.status(500).json({ error: 'Erro no processo.', details: error.message });
+    } finally {
+        if (global.gc) global.gc();
+        
+        // Limpeza periódica do Map para não acumular lixo (OPCIONAL)
+        if (searchCache.size > 100) { // Se o cache tiver mais de 100 pesquisas, limpa as velhas
+            const agora = Date.now();
+            for (let [key, val] of searchCache) {
+                if (agora - val.timestamp > CACHE_DURATION) searchCache.delete(key);
+            }
+        }
+    }
 });
 
-// Iniciar o servidor
-const PORT = process.env.PORT || 3000;
+const PORT = 3000;
 app.listen(PORT, () => {
-  console.log(`Servidor rodando na porta ${PORT}`);
+    console.log(`Servidor com Cache Ativo - Porta ${PORT}`);
 });
