@@ -1,6 +1,6 @@
 FROM node:20-slim
 
-# Instala dependências do sistema, Google Chrome e XVFB (Simulador de tela)
+# Instala dependências, Google Chrome e XVFB
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
@@ -48,7 +48,7 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Variável de ambiente para o Chrome ser achado pelo sistema
+# Configurações ambientais para o Chrome/Xvfb
 ENV CHROME_PATH=/usr/bin/google-chrome-stable
 ENV DISPLAY=:99
 
@@ -57,5 +57,6 @@ RUN npm install
 
 COPY . .
 
-# Inicia o Xvfb em background e depois o Node
-CMD Xvfb :99 -screen 0 1280x720x24 & node --expose-gc server.js
+# O segredo: Iniciar o Xvfb ANTES do Node
+# O "&" faz o Xvfb rodar em background, enquanto o node assume o processo principal
+CMD Xvfb :99 -ac -screen 0 1280x720x24 & node --expose-gc server.js
