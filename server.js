@@ -23,25 +23,20 @@ app.post('/search-flights', async (req, res) => {
 
     const cacheKey = `${origin}-${destination}-${departureDate}-${days}`.toUpperCase();
 
-    // SÓ CONSULTA O CACHE SE O DEBUG FOR FALSE
     if (!debug && searchCache.has(cacheKey)) {
         const cachedItem = searchCache.get(cacheKey);
         if (Date.now() - cachedItem.timestamp < CACHE_DURATION) {
             return res.json({ results: cachedItem.data, cached: true });
         }
         searchCache.delete(cacheKey);
-    } else if (debug) {
-        console.log(`[DEBUG] Ignorando cache para: ${cacheKey}`);
     }
 
-    const [d, m, y] = departureDate.split('/');
-    const formattedDate = `${y}-${m}-${d}`;
-
     try {
+        // Envia a data EXATAMENTE como recebeu
         const result = await scrapeFlights({ 
             origin, 
             destination, 
-            departureDate: formattedDate, 
+            departureDate, 
             days, 
             debug 
         });
@@ -51,19 +46,14 @@ app.post('/search-flights', async (req, res) => {
                 timestamp: Date.now(), 
                 data: result.result 
             });
-            if (debug) console.log(`[DEBUG] Cache atualizado para: ${cacheKey}`);
         }
 
         res.json({ results: result.result, cached: false });
 
     } catch (error) {
-        if (debug) console.error(`[DEBUG ERRO]: ${error.message}`);
         res.status(500).json({ error: 'Erro no processo.', details: error.message });
     } finally {
-        if (global.gc) {
-            if (debug) console.log('[MEMÓRIA] Executando Garbage Collector...');
-            global.gc();
-        }
+        if (global.gc) global.gc();
         if (debug) console.log('--- FIM DA OPERAÇÃO ---\n');
     }
 });
