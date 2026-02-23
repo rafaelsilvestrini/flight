@@ -3,7 +3,6 @@ const { connect } = require('puppeteer-real-browser');
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const scrapeFlights = async ({ origin, destination, departureDate, days, debug }) => {
-    // No Docker, headless precisa ser true se debug for false
     const isHeadless = debug === true ? false : true;
 
     const log = (msg) => {
@@ -11,20 +10,31 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
     };
 
     try {
-        log('Iniciando conexão com o navegador...');
+        log('Iniciando conexão inteligente com o navegador...');
 
-        // Detecta se é Linux (Docker) para setar o caminho do Chrome
-        const chromePath = process.platform === 'linux' ? '/usr/bin/google-chrome-stable' : undefined;
+        // DETECÇÃO AUTOMÁTICA DE AMBIENTE
+        const isLinux = process.platform === 'linux';
+        const chromePath = isLinux ? '/usr/bin/google-chrome-stable' : undefined;
+
+        // Flags base que funcionam em ambos
+        const browserArgs = [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--no-zygote'
+        ];
+
+        // Se estiver no Linux (Easypanel), adiciona a flag do Xvfb
+        if (isLinux) {
+            browserArgs.push('--display=:99');
+        } else {
+            browserArgs.push('--start-maximized');
+        }
 
         const { browser, page } = await connect({
             headless: isHeadless,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-gpu',
-                '--no-zygote'
-            ],
+            args: browserArgs,
             customConfig: {
                 executablePath: chromePath
             },
@@ -36,18 +46,18 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
         log(`Navegando para: ${searchUrl}`);
         await page.goto(searchUrl, { waitUntil: 'networkidle2' });
         
-        log('Bypass Cloudflare: aguardando renderização...');
+        log('Aguardando processamento inicial...');
         await delay(10000); 
 
         const isWarning = await page.$('.alert-warning');
         if (isWarning) {
             const msg = await page.evaluate(el => el.textContent.trim(), isWarning);
-            log(`Aviso do site: ${msg}`);
+            log(`Aviso: ${msg}`);
             await browser.close();
             return { result: msg };
         }
 
-        log('Aguardando tabela de resultados...');
+        log('Aguardando tabela de voos...');
         await page.waitForSelector('table tbody tr td .badge', { timeout: 30000 });
 
         log('Ordenando por Econômica...');
@@ -56,7 +66,7 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
         await page.click(sortBtn);
         await delay(3000);
 
-        log('Extraindo dados...');
+        log('Extraindo resultados...');
         const flightsData = await page.evaluate(() => {
             const rows = Array.from(document.querySelectorAll('table tbody tr'))
                           .filter(r => r.querySelector('.open-modal-btn'));
@@ -84,7 +94,7 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
         });
 
         if (flightsData.length > 0) {
-            log('Extraindo links de reserva do voo mais barato...');
+            log('Buscando links de reserva...');
             const buttons = await page.$$('button.open-modal-btn');
             if (buttons[0]) {
                 await buttons[0].click();
@@ -95,12 +105,12 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
             }
         }
 
-        log('Fechando navegador.');
+        log('Finalizado com sucesso.');
         await browser.close();
         return { result: flightsData };
 
     } catch (error) {
-        log(`ERRO NO PROCESSO: ${error.message}`);
+        log(`FALHA NO SCRAPER: ${error.message}`);
         throw error;
     }
 };
