@@ -1,131 +1,62 @@
-const { connect } = require('puppeteer-real-browser');
+const express = require('express');
+const cors = require('cors');
+const { scrapeFlights } = require('./scraping-final');
 
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const app = express();
+app.use(cors());
+app.use(express.json());
 
-const scrapeFlights = async ({ origin, destination, departureDate, days, debug }) => {
-    const isLinux = process.platform === 'linux';
-    const isHeadless = isLinux ? true : (debug === true ? false : true);
+const searchCache = new Map();
+const CACHE_DURATION = 30 * 60 * 1000; 
 
-    const log = (msg) => {
-        if (debug) console.log(`[DEBUG LOG ${new Date().toLocaleTimeString()}] -> ${msg}`);
-    };
+app.post('/search-flights', async (req, res) => {
+    const { origin, destination, departureDate, additional_days_num, debug = false } = req.body;
+    
+    if (debug) console.log('\n--- INÍCIO DA REQUISIÇÃO (MODO DEBUG ATIVO) ---');
 
-    let browser, page;
+    const allowedDays = [1, 3, 7, 14, 28, 60, 160];
+    const days = parseInt(additional_days_num);
+
+    if (!origin || !destination || !departureDate || !allowedDays.includes(days)) {
+        return res.status(400).json({ error: 'Parâmetros inválidos.' });
+    }
+
+    const cacheKey = `${origin}-${destination}-${departureDate}-${days}`.toUpperCase();
+
+    if (!debug && searchCache.has(cacheKey)) {
+        const cachedItem = searchCache.get(cacheKey);
+        if (Date.now() - cachedItem.timestamp < CACHE_DURATION) {
+            return res.json({ results: cachedItem.data, cached: true });
+        }
+        searchCache.delete(cacheKey);
+    }
 
     try {
-        log(`Iniciando conexão (Ambiente: ${process.platform})...`);
-
-        const chromePath = isLinux ? '/usr/bin/google-chrome-stable' : undefined;
-
-        const { browser: connectedBrowser, page: connectedPage } = await connect({
-            headless: isHeadless,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-gpu',
-                '--no-zygote',
-                '--disable-blink-features=AutomationControlled',
-                isLinux ? '--display=:99' : '--start-maximized'
-            ],
-            customConfig: { executablePath: chromePath },
-            turnstile: true,
-            disableXvfb: true
+        // Envia a data EXATAMENTE como recebeu
+        const result = await scrapeFlights({ 
+            origin, 
+            destination, 
+            departureDate, 
+            days, 
+            debug 
         });
 
-        browser = connectedBrowser;
-        page = connectedPage;
-
-        await page.setViewport({ width: 1280, height: 720 });
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
-
-        const searchUrl = `https://seats.aero/search?min_seats=1&applicable_cabin=any&additional_days=true&additional_days_num=${days}&max_fees=40000&date=${departureDate}&origins=${origin}&destinations=${destination}`;
-
-        log(`Navegando para: ${searchUrl}`);
-        await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-        
-        log('Aguardando carregamento (20s)...');
-        await delay(20000); 
-
-        if (debug) {
-            await page.screenshot({ path: 'vps_debug.png', fullPage: true });
-            log('Screenshot de debug salva.');
-        }
-
-        log('Verificando presença da tabela...');
-        await page.waitForSelector('th[data-dt-column="5"]', { timeout: 60000 });
-
-        // --- ORDENAÇÃO POR ÍNDICE (CONFORME O HTML DA SUA VPS) ---
-        log('Tentando ordenar por Econômica (Coluna 5)...');
-        try {
-            const clicked = await page.evaluate(() => {
-                const econHeader = document.querySelector('th[data-dt-column="5"]');
-                if (econHeader) {
-                    econHeader.click();
-                    return true;
-                }
-                return false;
+        if (Array.isArray(result.result)) {
+            searchCache.set(cacheKey, { 
+                timestamp: Date.now(), 
+                data: result.result 
             });
-
-            if (clicked) {
-                log('Clique de ordenação realizado. Aguardando processamento (6s)...');
-                await delay(6000); 
-            } else {
-                log('ERRO: Cabeçalho data-dt-column="5" não localizado.');
-            }
-        } catch (e) {
-            log(`Falha na ordenação: ${e.message}`);
-        }
-        // -------------------------------------------------------
-
-        log('Extraindo dados finais...');
-        const flightsData = await page.evaluate(() => {
-            const rows = Array.from(document.querySelectorAll('table tbody tr'))
-                          .filter(r => r.querySelector('.open-modal-btn'));
-            
-            return rows.map(row => {
-                const cols = row.querySelectorAll('td');
-                const getCabin = (td) => {
-                    const b = td?.querySelector('.badge');
-                    if (!b || b.innerText.includes('Indisponível')) return 'Indisponível';
-                    return {
-                        pontos: b.innerText.trim(),
-                        detalhes: b.getAttribute('data-bs-original-title') || b.getAttribute('title') || ''
-                    };
-                };
-
-                return {
-                    data: cols[0]?.innerText.trim(),
-                    programa: cols[2]?.innerText.trim(),
-                    origem: cols[3]?.innerText.trim(),
-                    destino: cols[4]?.innerText.trim(),
-                    economica: getCabin(cols[5]),
-                    executiva: getCabin(cols[6])
-                };
-            });
-        });
-
-        if (flightsData.length > 0) {
-            log('Buscando links de reserva do voo no topo...');
-            const buttons = await page.$$('button.open-modal-btn');
-            if (buttons[0]) {
-                await buttons[0].click();
-                await delay(3000);
-                flightsData[0].links_reserva = await page.$$eval('#bookingOptions a.dropdown-item', els =>
-                    els.map(el => ({ parceiro: el.textContent.trim(), url: el.href }))
-                );
-            }
         }
 
-        log('Finalizado.');
-        await browser.close();
-        return { result: flightsData };
+        res.json({ results: result.result, cached: false });
 
     } catch (error) {
-        log(`ERRO: ${error.message}`);
-        if (browser) await browser.close();
-        throw error;
+        res.status(500).json({ error: 'Erro no processo.', details: error.message });
+    } finally {
+        if (global.gc) global.gc();
+        if (debug) console.log('--- FIM DA OPERAÇÃO ---\n');
     }
-};
+});
 
-module.exports = { scrapeFlights };
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`API Rodando na porta ${PORT}`));
