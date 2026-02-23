@@ -3,23 +3,30 @@ const { connect } = require('puppeteer-real-browser');
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const scrapeFlights = async ({ origin, destination, departureDate, days, debug }) => {
+    // No Docker/Easypanel, debug deve ser false para rodar headless (sem janela)
     const isHeadless = debug === true ? false : true;
 
-    // Função auxiliar para logs
     const log = (msg) => {
         if (debug) console.log(`[DEBUG LOG ${new Date().toLocaleTimeString()}] -> ${msg}`);
     };
 
     try {
-        log('Iniciando conexão com o navegador...');
+        log('Iniciando conexão com o navegador (Configuração Docker)...');
+
         const { browser, page } = await connect({
             headless: isHeadless,
             args: [
-                '--start-maximized',
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage'
+                '--no-sandbox',                // Obrigatório para rodar como root no Docker
+                '--disable-setuid-sandbox',    // Segurança extra para containers
+                '--disable-dev-shm-usage',     // Usa RAM em vez de /dev/shm (evita crash em docker)
+                '--disable-gpu',               // Economiza CPU no servidor
+                '--no-zygote',                 // Economiza RAM
+                '--window-size=1280,720'
             ],
+            customConfig: {
+                // Tenta usar o caminho do Chrome instalado pelo Dockerfile
+                executablePath: process.platform === 'linux' ? '/usr/bin/google-chrome-stable' : undefined
+            },
             turnstile: true,
         });
 
@@ -28,10 +35,9 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
         log(`Navegando para URL: ${searchUrl}`);
         await page.goto(searchUrl, { waitUntil: 'networkidle2' });
         
-        log('Aguardando 10s para bypass do Cloudflare e renderização...');
+        log('Bypass Cloudflare: Aguardando carregamento inicial...');
         await delay(10000); 
 
-        log('Verificando se existem avisos de "Voo não encontrado"...');
         const isWarning = await page.$('.alert-warning');
         if (isWarning) {
             const msg = await page.evaluate(el => el.textContent.trim(), isWarning);
@@ -40,18 +46,17 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
             return { result: msg };
         }
 
-        log('Aguardando badges de preço aparecerem na tabela...');
+        log('Aguardando badges de preço...');
         await page.waitForSelector('table tbody tr td .badge', { timeout: 30000 });
 
-        log('Clicando para ordenar por Econômica (Menor Preço)...');
+        log('Ordenando por Econômica...');
         const sortBtn = 'span[aria-label^="Econômica"]';
         await page.waitForSelector(sortBtn);
         await page.click(sortBtn);
         
-        log('Aguardando 3s para a reordenação da tabela...');
         await delay(3000);
 
-        log('Iniciando extração dos dados da tabela...');
+        log('Extraindo dados...');
         const flightsData = await page.evaluate(() => {
             const rows = Array.from(document.querySelectorAll('table tbody tr'))
                           .filter(r => r.querySelector('.open-modal-btn'));
@@ -81,25 +86,26 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
         log(`Sucesso! ${flightsData.length} voos encontrados.`);
 
         if (flightsData.length > 0) {
-            log('Abrindo modal do voo mais barato para extrair links de reserva...');
+            log('Extraindo links de reserva...');
             const buttons = await page.$$('button.open-modal-btn');
             if (buttons[0]) {
                 await buttons[0].click();
                 await delay(3000);
                 
-                log('Extraindo links do dropdown de reserva...');
                 flightsData[0].links_reserva = await page.$$eval('#bookingOptions a.dropdown-item', els =>
                     els.map(el => ({ parceiro: el.textContent.trim(), url: el.href }))
                 );
             }
         }
 
-        log('Fechando navegador e retornando resultados.');
+        log('Encerrando processo do navegador.');
         await browser.close();
         return { result: flightsData };
 
     } catch (error) {
-        log(`ERRO CRÍTICO: ${error.message}`);
+        log(`ERRO CRÍTICO NO DOCKER: ${error.message}`);
+        // Tenta fechar o browser em caso de erro para não deixar processos órfãos
+        if (typeof browser !== 'undefined') await browser.close();
         throw error;
     }
 };
