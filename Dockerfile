@@ -1,6 +1,5 @@
 FROM node:20-slim
 
-# Instala dependências, Google Chrome e XVFB
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
@@ -48,15 +47,11 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Configurações ambientais para o Chrome/Xvfb
 ENV CHROME_PATH=/usr/bin/google-chrome-stable
-ENV DISPLAY=:99
 
 COPY package*.json ./
 RUN npm install
 
 COPY . .
 
-# O segredo: Iniciar o Xvfb ANTES do Node
-# O "&" faz o Xvfb rodar em background, enquanto o node assume o processo principal
-CMD Xvfb :99 -ac -screen 0 1280x720x24 & node --expose-gc server.js
+CMD ["xvfb-run", "--server-args=-screen 0 1280x720x24", "node", "--expose-gc", "server.js"]

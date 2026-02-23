@@ -3,42 +3,35 @@ const { connect } = require('puppeteer-real-browser');
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const scrapeFlights = async ({ origin, destination, departureDate, days, debug }) => {
-    const isHeadless = debug === true ? false : true;
+    // Se for Linux, roda headless (sem janela). Se for Windows, usa o valor do debug.
+    const isLinux = process.platform === 'linux';
+    const isHeadless = isLinux ? true : (debug === true ? false : true);
 
     const log = (msg) => {
         if (debug) console.log(`[DEBUG LOG ${new Date().toLocaleTimeString()}] -> ${msg}`);
     };
 
     try {
-        log('Iniciando conexão inteligente com o navegador...');
+        log(`Iniciando conexão (Ambiente: ${process.platform})...`);
 
-        // DETECÇÃO AUTOMÁTICA DE AMBIENTE
-        const isLinux = process.platform === 'linux';
+        // Define o caminho do Chrome apenas se estiver no Linux
         const chromePath = isLinux ? '/usr/bin/google-chrome-stable' : undefined;
-
-        // Flags base que funcionam em ambos
-        const browserArgs = [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-gpu',
-            '--no-zygote'
-        ];
-
-        // Se estiver no Linux (Easypanel), adiciona a flag do Xvfb
-        if (isLinux) {
-            browserArgs.push('--display=:99');
-        } else {
-            browserArgs.push('--start-maximized');
-        }
 
         const { browser, page } = await connect({
             headless: isHeadless,
-            args: browserArgs,
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--no-zygote',
+                isLinux ? '--display=:99' : '--start-maximized'
+            ],
             customConfig: {
                 executablePath: chromePath
             },
             turnstile: true,
+            disableXvfb: true // Importante: evita que a lib tente instalar o xvfb sozinha
         });
 
         const searchUrl = `https://seats.aero/search?min_seats=1&applicable_cabin=any&additional_days=true&additional_days_num=${days}&max_fees=40000&date=${departureDate}&origins=${origin}&destinations=${destination}`;
@@ -46,18 +39,18 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
         log(`Navegando para: ${searchUrl}`);
         await page.goto(searchUrl, { waitUntil: 'networkidle2' });
         
-        log('Aguardando processamento inicial...');
+        log('Aguardando 10s para bypass e carregamento...');
         await delay(10000); 
 
         const isWarning = await page.$('.alert-warning');
         if (isWarning) {
             const msg = await page.evaluate(el => el.textContent.trim(), isWarning);
-            log(`Aviso: ${msg}`);
+            log(`Aviso encontrado: ${msg}`);
             await browser.close();
             return { result: msg };
         }
 
-        log('Aguardando tabela de voos...');
+        log('Aguardando badges de preço...');
         await page.waitForSelector('table tbody tr td .badge', { timeout: 30000 });
 
         log('Ordenando por Econômica...');
@@ -66,7 +59,7 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
         await page.click(sortBtn);
         await delay(3000);
 
-        log('Extraindo resultados...');
+        log('Extraindo dados da tabela...');
         const flightsData = await page.evaluate(() => {
             const rows = Array.from(document.querySelectorAll('table tbody tr'))
                           .filter(r => r.querySelector('.open-modal-btn'));
@@ -94,7 +87,7 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
         });
 
         if (flightsData.length > 0) {
-            log('Buscando links de reserva...');
+            log('Extraindo links de reserva do primeiro resultado...');
             const buttons = await page.$$('button.open-modal-btn');
             if (buttons[0]) {
                 await buttons[0].click();
@@ -105,12 +98,13 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
             }
         }
 
-        log('Finalizado com sucesso.');
+        log('Tarefa concluída. Fechando navegador.');
         await browser.close();
         return { result: flightsData };
 
     } catch (error) {
-        log(`FALHA NO SCRAPER: ${error.message}`);
+        log(`ERRO CRÍTICO: ${error.message}`);
+        if (typeof browser !== 'undefined') await browser.close();
         throw error;
     }
 };

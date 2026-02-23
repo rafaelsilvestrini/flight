@@ -1,28 +1,29 @@
 {
-    "name": "webscraping-aero",
-    "version": "1.0.0",
-    "description": "Web scraping para buscar passagens no site seats.aero",
-    "main": "server.js",
-    "scripts": {
-        "start": "node server.js",
-        "dev": "nodemon server.js"
-    },
-    "dependencies": {
-        "cors": "^2.8.6",
-        "express": "^4.22.1",
-        "https-proxy-agent": "^7.0.6",
-        "node-fetch": "^3.3.2",
-        "puppeteer": "^22.15.0",
-        "puppeteer-extra": "^3.3.6",
-        "puppeteer-extra-plugin-stealth": "^2.11.2",
-        "puppeteer-real-browser": "^1.4.4"
-    },
-    "engines": {
-        "node": ">=16.0.0"
-    },
-    "author": "Nathan",
-    "license": "MIT",
-    "devDependencies": {
-        "nodemon": "^3.1.14"
-    }
+  "name": "webscraping-aero",
+  "version": "1.0.0",
+  "description": "Web scraping para buscar passagens no site seats.aero",
+  "main": "server.js",
+  "scripts": {
+    "start": "xvfb-run --server-args=\"-screen 0 1280x720x24\" node --expose-gc server.js",
+    "dev": "nodemon --expose-gc server.js",
+    "local": "node --expose-gc server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^4.22.1",
+    "https-proxy-agent": "^7.0.6",
+    "node-fetch": "^3.3.2",
+    "puppeteer": "^22.15.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "puppeteer-real-browser": "^1.4.4"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "author": "Nathan",
+  "license": "MIT",
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
 }
