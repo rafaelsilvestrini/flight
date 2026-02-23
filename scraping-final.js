@@ -17,7 +17,7 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
 
         const chromePath = isLinux ? '/usr/bin/google-chrome-stable' : undefined;
 
-        const { browser: connectedBrowser, page: connectedPage } = await connect({
+        const response = await connect({
             headless: isHeadless,
             args: [
                 '--no-sandbox',
@@ -33,8 +33,8 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
             disableXvfb: true
         });
 
-        browser = connectedBrowser;
-        page = connectedPage;
+        browser = response.browser;
+        page = response.page;
 
         await page.setViewport({ width: 1280, height: 720 });
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
@@ -44,43 +44,25 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
         log(`Navegando para: ${searchUrl}`);
         await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         
-        log('Aguardando carregamento inicial (20s)...');
+        log('Aguardando carregamento (20s)...');
         await delay(20000); 
 
-        if (debug) {
-            await page.screenshot({ path: 'vps_debug.png', fullPage: true });
-            log('Screenshot salva para conferência.');
-        }
+        if (debug) await page.screenshot({ path: 'vps_debug.png', fullPage: true });
 
-        log('Verificando presença da tabela...');
-        await page.waitForSelector('table thead tr th', { timeout: 60000 });
-
-        // --- BLOCO DE ORDENAÇÃO ROBUSTA ---
-        log('Tentando ordenar por Econômica...');
+        // Ordenação Opcional
         try {
-            const clicked = await page.evaluate(() => {
-                const headers = Array.from(document.querySelectorAll('th'));
-                // Procura a coluna que contém o texto Econômica
-                const econHeader = headers.find(h => h.innerText.includes('Econômica'));
-                if (econHeader) {
-                    econHeader.click();
-                    return true;
-                }
-                return false;
+            log('Tentando ordenar...');
+            await page.waitForSelector('th[data-dt-column="5"]', { timeout: 10000 });
+            await page.evaluate(() => {
+                const el = document.querySelector('th[data-dt-column="5"]');
+                if (el) el.click();
             });
-
-            if (clicked) {
-                log('Clique de ordenação realizado. Aguardando reordenar...');
-                await delay(5000); // Tempo para a tabela processar a nova ordem
-            } else {
-                log('Cabeçalho "Econômica" não encontrado via texto.');
-            }
+            await delay(5000);
         } catch (e) {
-            log(`Falha na ordenação: ${e.message}`);
+            log('Aviso: Pulando ordenação.');
         }
-        // ----------------------------------
 
-        log('Extraindo dados finais...');
+        log('Extraindo dados...');
         const flightsData = await page.evaluate(() => {
             const rows = Array.from(document.querySelectorAll('table tbody tr'))
                           .filter(r => r.querySelector('.open-modal-btn'));
@@ -90,10 +72,7 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
                 const getCabin = (td) => {
                     const b = td?.querySelector('.badge');
                     if (!b || b.innerText.includes('Indisponível')) return 'Indisponível';
-                    return {
-                        pontos: b.innerText.trim(),
-                        detalhes: b.getAttribute('data-bs-original-title') || b.getAttribute('title') || ''
-                    };
+                    return { pontos: b.innerText.trim() };
                 };
 
                 return {
@@ -107,19 +86,6 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
             });
         });
 
-        if (flightsData.length > 0) {
-            log('Pegando links de reserva do voo mais barato...');
-            const buttons = await page.$$('button.open-modal-btn');
-            if (buttons[0]) {
-                await buttons[0].click();
-                await delay(3000);
-                flightsData[0].links_reserva = await page.$$eval('#bookingOptions a.dropdown-item', els =>
-                    els.map(el => ({ parceiro: el.textContent.trim(), url: el.href }))
-                );
-            }
-        }
-
-        log('Finalizado com sucesso.');
         await browser.close();
         return { result: flightsData };
 

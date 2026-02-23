@@ -10,11 +10,9 @@ const searchCache = new Map();
 const CACHE_DURATION = 30 * 60 * 1000; 
 
 app.post('/search-flights', async (req, res) => {
-    // Pegamos os dados direto do corpo da requisição
     const { origin, destination, departureDate, additional_days_num, debug = false } = req.body;
     
-    if (debug) console.log(`\n--- INÍCIO DA REQUISIÇÃO ---`);
-    if (debug) console.log(`[DEBUG] Recebido: ${origin} -> ${destination} em ${departureDate}`);
+    if (debug) console.log('\n--- INÍCIO DA REQUISIÇÃO ---');
 
     const allowedDays = [1, 3, 7, 14, 28, 60, 160];
     const days = parseInt(additional_days_num);
@@ -25,7 +23,6 @@ app.post('/search-flights', async (req, res) => {
 
     const cacheKey = `${origin}-${destination}-${departureDate}-${days}`.toUpperCase();
 
-    // Cache ignorado se debug for true
     if (!debug && searchCache.has(cacheKey)) {
         const cachedItem = searchCache.get(cacheKey);
         if (Date.now() - cachedItem.timestamp < CACHE_DURATION) {
@@ -35,11 +32,10 @@ app.post('/search-flights', async (req, res) => {
     }
 
     try {
-        // AQUI ESTÁ A CHAVE: Passamos departureDate SEM NENHUM TRATAMENTO
         const result = await scrapeFlights({ 
             origin, 
             destination, 
-            departureDate, // Vai exatamente o que você enviou (ex: 2026-03-25)
+            departureDate, 
             days, 
             debug 
         });
