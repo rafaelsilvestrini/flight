@@ -23,7 +23,7 @@ app.post('/search-flights', async (req, res) => {
 
     const cacheKey = `${origin}-${destination}-${departureDate}-${days}`.toUpperCase();
 
-    if (!debug && searchCache.has(cacheKey)) {
+    if (searchCache.has(cacheKey)) {
         const cachedItem = searchCache.get(cacheKey);
         if (Date.now() - cachedItem.timestamp < CACHE_DURATION) {
             return res.json({ results: cachedItem.data, cached: true });
@@ -31,11 +31,12 @@ app.post('/search-flights', async (req, res) => {
         searchCache.delete(cacheKey);
     }
 
+
     try {
         const result = await scrapeFlights({ 
             origin, 
             destination, 
-            departureDate, 
+            departureDate: departureDate, 
             days, 
             debug 
         });
@@ -52,7 +53,9 @@ app.post('/search-flights', async (req, res) => {
     } catch (error) {
         res.status(500).json({ error: 'Erro no processo.', details: error.message });
     } finally {
-        if (global.gc) global.gc();
+        if (global.gc) {
+            global.gc();
+        }
         if (debug) console.log('--- FIM DA OPERAÇÃO ---\n');
     }
 });

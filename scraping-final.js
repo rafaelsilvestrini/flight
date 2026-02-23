@@ -17,7 +17,7 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
 
         const chromePath = isLinux ? '/usr/bin/google-chrome-stable' : undefined;
 
-        const response = await connect({
+        const { browser: connectedBrowser, page: connectedPage } = await connect({
             headless: isHeadless,
             args: [
                 '--no-sandbox',
@@ -33,8 +33,8 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
             disableXvfb: true
         });
 
-        browser = response.browser;
-        page = response.page;
+        browser = connectedBrowser;
+        page = connectedPage;
 
         await page.setViewport({ width: 1280, height: 720 });
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
@@ -44,25 +44,48 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
         log(`Navegando para: ${searchUrl}`);
         await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         
-        log('Aguardando carregamento (20s)...');
+        log('Aguardando carregamento e estabilização (20s)...');
         await delay(20000); 
 
-        if (debug) await page.screenshot({ path: 'vps_debug.png', fullPage: true });
-
-        // Ordenação Opcional
-        try {
-            log('Tentando ordenar...');
-            await page.waitForSelector('th[data-dt-column="5"]', { timeout: 10000 });
-            await page.evaluate(() => {
-                const el = document.querySelector('th[data-dt-column="5"]');
-                if (el) el.click();
-            });
-            await delay(5000);
-        } catch (e) {
-            log('Aviso: Pulando ordenação.');
+        if (debug) {
+            await page.screenshot({ path: 'vps_debug.png', fullPage: true });
+            log('Screenshot de debug salva.');
         }
 
-        log('Extraindo dados...');
+        log('Verificando presença da tabela...');
+        await page.waitForSelector('.dt-column-title', { timeout: 60000 });
+
+        // --- ORDENAÇÃO POR CABEÇALHO ESPECÍFICO ---
+        log('Tentando ordenar por Econômica...');
+        try {
+            const clicked = await page.evaluate(() => {
+                // Busca especificamente o span que contém o título "Econômica"
+                const titles = Array.from(document.querySelectorAll('.dt-column-title'));
+                const econSpan = titles.find(el => el.innerText.trim() === 'Econômica');
+                
+                if (econSpan) {
+                    // Clica no cabeçalho TH mais próximo que contém esse título
+                    const parentTh = econSpan.closest('th');
+                    if (parentTh) {
+                        parentTh.click();
+                        return true;
+                    }
+                }
+                return false;
+            });
+
+            if (clicked) {
+                log('Clique de ordenação realizado. Aguardando processamento da tabela...');
+                await delay(6000); // 6 segundos para a VPS reordenar a lista
+            } else {
+                log('ERRO: Cabeçalho "Econômica" não localizado na estrutura DOM.');
+            }
+        } catch (e) {
+            log(`Falha na ordenação: ${e.message}`);
+        }
+        // ------------------------------------------
+
+        log('Extraindo dados finais...');
         const flightsData = await page.evaluate(() => {
             const rows = Array.from(document.querySelectorAll('table tbody tr'))
                           .filter(r => r.querySelector('.open-modal-btn'));
@@ -72,7 +95,10 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
                 const getCabin = (td) => {
                     const b = td?.querySelector('.badge');
                     if (!b || b.innerText.includes('Indisponível')) return 'Indisponível';
-                    return { pontos: b.innerText.trim() };
+                    return {
+                        pontos: b.innerText.trim(),
+                        detalhes: b.getAttribute('data-bs-original-title') || b.getAttribute('title') || ''
+                    };
                 };
 
                 return {
@@ -86,11 +112,24 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
             });
         });
 
+        if (flightsData.length > 0) {
+            log('Extraindo links de reserva do voo no topo da lista...');
+            const buttons = await page.$$('button.open-modal-btn');
+            if (buttons[0]) {
+                await buttons[0].click();
+                await delay(3000);
+                flightsData[0].links_reserva = await page.$$eval('#bookingOptions a.dropdown-item', els =>
+                    els.map(el => ({ parceiro: el.textContent.trim(), url: el.href }))
+                );
+            }
+        }
+
+        log('Finalizado.');
         await browser.close();
         return { result: flightsData };
 
     } catch (error) {
-        log(`ERRO: ${error.message}`);
+        log(`ERRO NO PROCESSO: ${error.message}`);
         if (browser) await browser.close();
         throw error;
     }
