@@ -1,5 +1,4 @@
 const { connect } = require('puppeteer-real-browser');
-const fs = require('fs');
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -37,7 +36,6 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
         browser = connectedBrowser;
         page = connectedPage;
 
-        // Configurações extras para evitar bloqueio na VPS
         await page.setViewport({ width: 1280, height: 720 });
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
 
@@ -46,34 +44,43 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
         log(`Navegando para: ${searchUrl}`);
         await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         
-        log('Aguardando bypass e carregamento (20s)...');
+        log('Aguardando carregamento inicial (20s)...');
         await delay(20000); 
 
-        // Tira print para diagnóstico (essencial na VPS)
         if (debug) {
             await page.screenshot({ path: 'vps_debug.png', fullPage: true });
-            log('Screenshot salva como vps_debug.png');
+            log('Screenshot salva para conferência.');
         }
 
-        const isWarning = await page.$('.alert-warning');
-        if (isWarning) {
-            const msg = await page.evaluate(el => el.textContent.trim(), isWarning);
-            log(`Aviso: ${msg}`);
-            await browser.close();
-            return { result: msg };
+        log('Verificando presença da tabela...');
+        await page.waitForSelector('table thead tr th', { timeout: 60000 });
+
+        // --- BLOCO DE ORDENAÇÃO ROBUSTA ---
+        log('Tentando ordenar por Econômica...');
+        try {
+            const clicked = await page.evaluate(() => {
+                const headers = Array.from(document.querySelectorAll('th'));
+                // Procura a coluna que contém o texto Econômica
+                const econHeader = headers.find(h => h.innerText.includes('Econômica'));
+                if (econHeader) {
+                    econHeader.click();
+                    return true;
+                }
+                return false;
+            });
+
+            if (clicked) {
+                log('Clique de ordenação realizado. Aguardando reordenar...');
+                await delay(5000); // Tempo para a tabela processar a nova ordem
+            } else {
+                log('Cabeçalho "Econômica" não encontrado via texto.');
+            }
+        } catch (e) {
+            log(`Falha na ordenação: ${e.message}`);
         }
+        // ----------------------------------
 
-        log('Aguardando tabela de resultados...');
-        // Tentamos esperar por qualquer célula da tabela antes da badge específica
-        await page.waitForSelector('table tbody tr', { timeout: 60000 });
-
-        log('Ordenando por Econômica...');
-        const sortBtn = 'span[aria-label^="Econômica"]';
-        await page.waitForSelector(sortBtn, { timeout: 10000 }).catch(() => log('Botão de ordenação não encontrado, continuando...'));
-        await page.click(sortBtn).catch(() => {});
-        await delay(3000);
-
-        log('Extraindo dados...');
+        log('Extraindo dados finais...');
         const flightsData = await page.evaluate(() => {
             const rows = Array.from(document.querySelectorAll('table tbody tr'))
                           .filter(r => r.querySelector('.open-modal-btn'));
@@ -101,7 +108,7 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
         });
 
         if (flightsData.length > 0) {
-            log('Buscando links de reserva...');
+            log('Pegando links de reserva do voo mais barato...');
             const buttons = await page.$$('button.open-modal-btn');
             if (buttons[0]) {
                 await buttons[0].click();
@@ -112,17 +119,13 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
             }
         }
 
-        log('Finalizado.');
+        log('Finalizado com sucesso.');
         await browser.close();
         return { result: flightsData };
 
     } catch (error) {
         log(`ERRO: ${error.message}`);
-        if (browser) {
-            // Se falhou, tenta um print do erro antes de fechar
-            try { await page.screenshot({ path: 'error_fatal.png' }); } catch(e) {}
-            await browser.close();
-        }
+        if (browser) await browser.close();
         throw error;
     }
 };
