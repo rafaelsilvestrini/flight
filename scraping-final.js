@@ -1,4 +1,5 @@
 const { connect } = require('puppeteer-real-browser');
+const fs = require('fs');
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -17,56 +18,59 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
 
         const chromePath = isLinux ? '/usr/bin/google-chrome-stable' : undefined;
 
-        // Flags para evitar detecção e otimizar RAM na VPS
-        const browserArgs = [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-gpu',
-            '--no-zygote',
-            '--disable-blink-features=AutomationControlled',
-            isLinux ? '--display=:99' : '--start-maximized'
-        ];
-
-        const response = await connect({
+        const { browser: connectedBrowser, page: connectedPage } = await connect({
             headless: isHeadless,
-            args: browserArgs,
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--no-zygote',
+                '--disable-blink-features=AutomationControlled',
+                isLinux ? '--display=:99' : '--start-maximized'
+            ],
             customConfig: { executablePath: chromePath },
             turnstile: true,
             disableXvfb: true
         });
 
-        browser = response.browser;
-        page = response.page;
+        browser = connectedBrowser;
+        page = connectedPage;
+
+        // Configurações extras para evitar bloqueio na VPS
+        await page.setViewport({ width: 1280, height: 720 });
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
 
         const searchUrl = `https://seats.aero/search?min_seats=1&applicable_cabin=any&additional_days=true&additional_days_num=${days}&max_fees=40000&date=${departureDate}&origins=${origin}&destinations=${destination}`;
 
         log(`Navegando para: ${searchUrl}`);
-        // Aumentado timeout para 60s (VPS pode oscilar rede)
         await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         
-        log('Aguardando bypass do Cloudflare (15s)...');
-        await delay(15000); 
+        log('Aguardando bypass e carregamento (20s)...');
+        await delay(20000); 
 
-        // Captura screenshot se estiver em modo debug para diagnosticar erros de carregamento
-        if (debug) await page.screenshot({ path: 'last_view.png' });
+        // Tira print para diagnóstico (essencial na VPS)
+        if (debug) {
+            await page.screenshot({ path: 'vps_debug.png', fullPage: true });
+            log('Screenshot salva como vps_debug.png');
+        }
 
         const isWarning = await page.$('.alert-warning');
         if (isWarning) {
             const msg = await page.evaluate(el => el.textContent.trim(), isWarning);
-            log(`Aviso encontrado: ${msg}`);
+            log(`Aviso: ${msg}`);
             await browser.close();
             return { result: msg };
         }
 
-        log('Aguardando tabela de preços (Timeout 60s)...');
-        // Aumentado timeout para evitar o erro de 30s
-        await page.waitForSelector('table tbody tr td .badge', { timeout: 60000 });
+        log('Aguardando tabela de resultados...');
+        // Tentamos esperar por qualquer célula da tabela antes da badge específica
+        await page.waitForSelector('table tbody tr', { timeout: 60000 });
 
         log('Ordenando por Econômica...');
         const sortBtn = 'span[aria-label^="Econômica"]';
-        await page.waitForSelector(sortBtn);
-        await page.click(sortBtn);
+        await page.waitForSelector(sortBtn, { timeout: 10000 }).catch(() => log('Botão de ordenação não encontrado, continuando...'));
+        await page.click(sortBtn).catch(() => {});
         await delay(3000);
 
         log('Extraindo dados...');
@@ -77,7 +81,7 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
             return rows.map(row => {
                 const cols = row.querySelectorAll('td');
                 const getCabin = (td) => {
-                    const b = td.querySelector('.badge');
+                    const b = td?.querySelector('.badge');
                     if (!b || b.innerText.includes('Indisponível')) return 'Indisponível';
                     return {
                         pontos: b.innerText.trim(),
@@ -97,6 +101,7 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
         });
 
         if (flightsData.length > 0) {
+            log('Buscando links de reserva...');
             const buttons = await page.$$('button.open-modal-btn');
             if (buttons[0]) {
                 await buttons[0].click();
@@ -107,13 +112,17 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
             }
         }
 
-        log('Sucesso! Fechando navegador.');
+        log('Finalizado.');
         await browser.close();
         return { result: flightsData };
 
     } catch (error) {
-        log(`FALHA NO SCRAPER: ${error.message}`);
-        if (browser) await browser.close();
+        log(`ERRO: ${error.message}`);
+        if (browser) {
+            // Se falhou, tenta um print do erro antes de fechar
+            try { await page.screenshot({ path: 'error_fatal.png' }); } catch(e) {}
+            await browser.close();
+        }
         throw error;
     }
 };
