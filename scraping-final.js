@@ -3,7 +3,7 @@ const { connect } = require('puppeteer-real-browser');
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const scrapeFlights = async ({ origin, destination, departureDate, days, debug }) => {
-    // No Docker/Easypanel, debug deve ser false para rodar headless (sem janela)
+    // No Docker, headless precisa ser true se debug for false
     const isHeadless = debug === true ? false : true;
 
     const log = (msg) => {
@@ -11,31 +11,32 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
     };
 
     try {
-        log('Iniciando conexão com o navegador (Configuração Docker)...');
+        log('Iniciando conexão com o navegador...');
+
+        // Detecta se é Linux (Docker) para setar o caminho do Chrome
+        const chromePath = process.platform === 'linux' ? '/usr/bin/google-chrome-stable' : undefined;
 
         const { browser, page } = await connect({
             headless: isHeadless,
             args: [
-                '--no-sandbox',                // Obrigatório para rodar como root no Docker
-                '--disable-setuid-sandbox',    // Segurança extra para containers
-                '--disable-dev-shm-usage',     // Usa RAM em vez de /dev/shm (evita crash em docker)
-                '--disable-gpu',               // Economiza CPU no servidor
-                '--no-zygote',                 // Economiza RAM
-                '--window-size=1280,720'
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--no-zygote'
             ],
             customConfig: {
-                // Tenta usar o caminho do Chrome instalado pelo Dockerfile
-                executablePath: process.platform === 'linux' ? '/usr/bin/google-chrome-stable' : undefined
+                executablePath: chromePath
             },
             turnstile: true,
         });
 
         const searchUrl = `https://seats.aero/search?min_seats=1&applicable_cabin=any&additional_days=true&additional_days_num=${days}&max_fees=40000&date=${departureDate}&origins=${origin}&destinations=${destination}`;
 
-        log(`Navegando para URL: ${searchUrl}`);
+        log(`Navegando para: ${searchUrl}`);
         await page.goto(searchUrl, { waitUntil: 'networkidle2' });
         
-        log('Bypass Cloudflare: Aguardando carregamento inicial...');
+        log('Bypass Cloudflare: aguardando renderização...');
         await delay(10000); 
 
         const isWarning = await page.$('.alert-warning');
@@ -46,14 +47,13 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
             return { result: msg };
         }
 
-        log('Aguardando badges de preço...');
+        log('Aguardando tabela de resultados...');
         await page.waitForSelector('table tbody tr td .badge', { timeout: 30000 });
 
         log('Ordenando por Econômica...');
         const sortBtn = 'span[aria-label^="Econômica"]';
         await page.waitForSelector(sortBtn);
         await page.click(sortBtn);
-        
         await delay(3000);
 
         log('Extraindo dados...');
@@ -83,29 +83,24 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
             });
         });
 
-        log(`Sucesso! ${flightsData.length} voos encontrados.`);
-
         if (flightsData.length > 0) {
-            log('Extraindo links de reserva...');
+            log('Extraindo links de reserva do voo mais barato...');
             const buttons = await page.$$('button.open-modal-btn');
             if (buttons[0]) {
                 await buttons[0].click();
                 await delay(3000);
-                
                 flightsData[0].links_reserva = await page.$$eval('#bookingOptions a.dropdown-item', els =>
                     els.map(el => ({ parceiro: el.textContent.trim(), url: el.href }))
                 );
             }
         }
 
-        log('Encerrando processo do navegador.');
+        log('Fechando navegador.');
         await browser.close();
         return { result: flightsData };
 
     } catch (error) {
-        log(`ERRO CRÍTICO NO DOCKER: ${error.message}`);
-        // Tenta fechar o browser em caso de erro para não deixar processos órfãos
-        if (typeof browser !== 'undefined') await browser.close();
+        log(`ERRO NO PROCESSO: ${error.message}`);
         throw error;
     }
 };
