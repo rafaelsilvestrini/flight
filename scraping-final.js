@@ -44,7 +44,7 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
         log(`Navegando para: ${searchUrl}`);
         await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         
-        log('Aguardando carregamento e estabilização (20s)...');
+        log('Aguardando carregamento (20s)...');
         await delay(20000); 
 
         if (debug) {
@@ -53,37 +53,30 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
         }
 
         log('Verificando presença da tabela...');
-        await page.waitForSelector('.dt-column-title', { timeout: 60000 });
+        await page.waitForSelector('th[data-dt-column="5"]', { timeout: 60000 });
 
-        // --- ORDENAÇÃO POR CABEÇALHO ESPECÍFICO ---
-        log('Tentando ordenar por Econômica...');
+        // --- ORDENAÇÃO POR ÍNDICE (CONFORME O HTML DA SUA VPS) ---
+        log('Tentando ordenar por Econômica (Coluna 5)...');
         try {
             const clicked = await page.evaluate(() => {
-                // Busca especificamente o span que contém o título "Econômica"
-                const titles = Array.from(document.querySelectorAll('.dt-column-title'));
-                const econSpan = titles.find(el => el.innerText.trim() === 'Econômica');
-                
-                if (econSpan) {
-                    // Clica no cabeçalho TH mais próximo que contém esse título
-                    const parentTh = econSpan.closest('th');
-                    if (parentTh) {
-                        parentTh.click();
-                        return true;
-                    }
+                const econHeader = document.querySelector('th[data-dt-column="5"]');
+                if (econHeader) {
+                    econHeader.click();
+                    return true;
                 }
                 return false;
             });
 
             if (clicked) {
-                log('Clique de ordenação realizado. Aguardando processamento da tabela...');
-                await delay(6000); // 6 segundos para a VPS reordenar a lista
+                log('Clique de ordenação realizado. Aguardando processamento (6s)...');
+                await delay(6000); 
             } else {
-                log('ERRO: Cabeçalho "Econômica" não localizado na estrutura DOM.');
+                log('ERRO: Cabeçalho data-dt-column="5" não localizado.');
             }
         } catch (e) {
             log(`Falha na ordenação: ${e.message}`);
         }
-        // ------------------------------------------
+        // -------------------------------------------------------
 
         log('Extraindo dados finais...');
         const flightsData = await page.evaluate(() => {
@@ -113,7 +106,7 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
         });
 
         if (flightsData.length > 0) {
-            log('Extraindo links de reserva do voo no topo da lista...');
+            log('Buscando links de reserva do voo no topo...');
             const buttons = await page.$$('button.open-modal-btn');
             if (buttons[0]) {
                 await buttons[0].click();
@@ -129,7 +122,7 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
         return { result: flightsData };
 
     } catch (error) {
-        log(`ERRO NO PROCESSO: ${error.message}`);
+        log(`ERRO: ${error.message}`);
         if (browser) await browser.close();
         throw error;
     }
