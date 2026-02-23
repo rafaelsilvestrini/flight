@@ -3,7 +3,6 @@ const { connect } = require('puppeteer-real-browser');
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const scrapeFlights = async ({ origin, destination, departureDate, days, debug }) => {
-    // Se for Linux, roda headless (sem janela). Se for Windows, usa o valor do debug.
     const isLinux = process.platform === 'linux';
     const isHeadless = isLinux ? true : (debug === true ? false : true);
 
@@ -11,36 +10,46 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
         if (debug) console.log(`[DEBUG LOG ${new Date().toLocaleTimeString()}] -> ${msg}`);
     };
 
+    let browser, page;
+
     try {
         log(`Iniciando conexão (Ambiente: ${process.platform})...`);
 
-        // Define o caminho do Chrome apenas se estiver no Linux
         const chromePath = isLinux ? '/usr/bin/google-chrome-stable' : undefined;
 
-        const { browser, page } = await connect({
+        // Flags para evitar detecção e otimizar RAM na VPS
+        const browserArgs = [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--no-zygote',
+            '--disable-blink-features=AutomationControlled',
+            isLinux ? '--display=:99' : '--start-maximized'
+        ];
+
+        const response = await connect({
             headless: isHeadless,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-gpu',
-                '--no-zygote',
-                isLinux ? '--display=:99' : '--start-maximized'
-            ],
-            customConfig: {
-                executablePath: chromePath
-            },
+            args: browserArgs,
+            customConfig: { executablePath: chromePath },
             turnstile: true,
-            disableXvfb: true // Importante: evita que a lib tente instalar o xvfb sozinha
+            disableXvfb: true
         });
+
+        browser = response.browser;
+        page = response.page;
 
         const searchUrl = `https://seats.aero/search?min_seats=1&applicable_cabin=any&additional_days=true&additional_days_num=${days}&max_fees=40000&date=${departureDate}&origins=${origin}&destinations=${destination}`;
 
         log(`Navegando para: ${searchUrl}`);
-        await page.goto(searchUrl, { waitUntil: 'networkidle2' });
+        // Aumentado timeout para 60s (VPS pode oscilar rede)
+        await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         
-        log('Aguardando 10s para bypass e carregamento...');
-        await delay(10000); 
+        log('Aguardando bypass do Cloudflare (15s)...');
+        await delay(15000); 
+
+        // Captura screenshot se estiver em modo debug para diagnosticar erros de carregamento
+        if (debug) await page.screenshot({ path: 'last_view.png' });
 
         const isWarning = await page.$('.alert-warning');
         if (isWarning) {
@@ -50,8 +59,9 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
             return { result: msg };
         }
 
-        log('Aguardando badges de preço...');
-        await page.waitForSelector('table tbody tr td .badge', { timeout: 30000 });
+        log('Aguardando tabela de preços (Timeout 60s)...');
+        // Aumentado timeout para evitar o erro de 30s
+        await page.waitForSelector('table tbody tr td .badge', { timeout: 60000 });
 
         log('Ordenando por Econômica...');
         const sortBtn = 'span[aria-label^="Econômica"]';
@@ -59,7 +69,7 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
         await page.click(sortBtn);
         await delay(3000);
 
-        log('Extraindo dados da tabela...');
+        log('Extraindo dados...');
         const flightsData = await page.evaluate(() => {
             const rows = Array.from(document.querySelectorAll('table tbody tr'))
                           .filter(r => r.querySelector('.open-modal-btn'));
@@ -87,7 +97,6 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
         });
 
         if (flightsData.length > 0) {
-            log('Extraindo links de reserva do primeiro resultado...');
             const buttons = await page.$$('button.open-modal-btn');
             if (buttons[0]) {
                 await buttons[0].click();
@@ -98,13 +107,13 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
             }
         }
 
-        log('Tarefa concluída. Fechando navegador.');
+        log('Sucesso! Fechando navegador.');
         await browser.close();
         return { result: flightsData };
 
     } catch (error) {
-        log(`ERRO CRÍTICO: ${error.message}`);
-        if (typeof browser !== 'undefined') await browser.close();
+        log(`FALHA NO SCRAPER: ${error.message}`);
+        if (browser) await browser.close();
         throw error;
     }
 };

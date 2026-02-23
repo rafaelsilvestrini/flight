@@ -4,7 +4,7 @@
   "description": "Web scraping para buscar passagens no site seats.aero",
   "main": "server.js",
   "scripts": {
-    "start": "xvfb-run --server-args=\"-screen 0 1280x720x24\" node --expose-gc server.js",
+"start": "xvfb-run --server-args=\"-screen 0 1280x720x24\" node --expose-gc server.js",
     "dev": "nodemon --expose-gc server.js",
     "local": "node --expose-gc server.js"
   },
