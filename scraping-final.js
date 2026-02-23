@@ -44,22 +44,24 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
         log(`Navegando para: ${searchUrl}`);
         await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         
-        log('Aguardando carregamento (20s)...');
+        log('Aguardando carregamento inicial (20s)...');
         await delay(20000); 
 
         if (debug) {
             await page.screenshot({ path: 'vps_debug.png', fullPage: true });
-            log('Screenshot de debug salva.');
+            log('Screenshot salva para conferência.');
         }
 
         log('Verificando presença da tabela...');
-        await page.waitForSelector('th[data-dt-column="5"]', { timeout: 60000 });
+        await page.waitForSelector('table thead tr th', { timeout: 60000 });
 
-        // --- ORDENAÇÃO POR ÍNDICE (CONFORME O HTML DA SUA VPS) ---
-        log('Tentando ordenar por Econômica (Coluna 5)...');
+        // --- BLOCO DE ORDENAÇÃO ROBUSTA ---
+        log('Tentando ordenar por Econômica...');
         try {
             const clicked = await page.evaluate(() => {
-                const econHeader = document.querySelector('th[data-dt-column="5"]');
+                const headers = Array.from(document.querySelectorAll('th'));
+                // Procura a coluna que contém o texto Econômica
+                const econHeader = headers.find(h => h.innerText.includes('Econômica'));
                 if (econHeader) {
                     econHeader.click();
                     return true;
@@ -68,15 +70,15 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
             });
 
             if (clicked) {
-                log('Clique de ordenação realizado. Aguardando processamento (6s)...');
-                await delay(6000); 
+                log('Clique de ordenação realizado. Aguardando reordenar...');
+                await delay(5000); // Tempo para a tabela processar a nova ordem
             } else {
-                log('ERRO: Cabeçalho data-dt-column="5" não localizado.');
+                log('Cabeçalho "Econômica" não encontrado via texto.');
             }
         } catch (e) {
             log(`Falha na ordenação: ${e.message}`);
         }
-        // -------------------------------------------------------
+        // ----------------------------------
 
         log('Extraindo dados finais...');
         const flightsData = await page.evaluate(() => {
@@ -106,7 +108,7 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
         });
 
         if (flightsData.length > 0) {
-            log('Buscando links de reserva do voo no topo...');
+            log('Pegando links de reserva do voo mais barato...');
             const buttons = await page.$$('button.open-modal-btn');
             if (buttons[0]) {
                 await buttons[0].click();
@@ -117,7 +119,7 @@ const scrapeFlights = async ({ origin, destination, departureDate, days, debug }
             }
         }
 
-        log('Finalizado.');
+        log('Finalizado com sucesso.');
         await browser.close();
         return { result: flightsData };
 
